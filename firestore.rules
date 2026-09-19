@@ -1,0 +1,163 @@
+rules_version = '2';
+
+// Paste this into Firebase console → Firestore Database → Rules, then Publish.
+// Usernames are claimed once and owned by the browser (anonymous account) that claimed them.
+// Scores can only be posted under a name you own, must be plausible, and only ever improve.
+// Duels add four collections: matches (invite rooms), matches/*/players (live progress),
+// duels (immutable results) and ratings (Elo, capped at +/-40 per duel).
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    match /usernames/{name} {
+      allow read: if true;
+      allow create: if request.auth != null
+        && name.matches('^[a-z0-9_]{3,16}$')
+        && request.resource.data.keys().hasOnly(['uid', 'display', 'createdAt'])
+        && request.resource.data.uid == request.auth.uid
+        && request.resource.data.display is string
+        && request.resource.data.display.lower() == name
+        && request.resource.data.createdAt == request.time;
+      allow update, delete: if false;
+    }
+
+    match /boards/{board}/scores/{name} {
+      allow read: if true;
+      allow create: if validScore(board, name);
+      allow update: if validScore(board, name) && request.resource.data.rank < resource.data.rank;
+      allow delete: if false;
+    }
+
+    // A duel room holds the seed both players build their questions from. The host creates
+    // it; the only update anyone can make is one guest taking the empty seat.
+    match /matches/{code} {
+      allow read: if request.auth != null;
+      allow create: if request.auth != null
+        && code.matches('^[A-Z0-9]{4}$')
+        && request.resource.data.host == request.auth.uid
+        && owns(request.resource.data.hostName.lower())
+        && request.resource.data.state == 'open'
+        && request.resource.data.guestName == null
+        && request.resource.data.seed is int
+        && request.resource.data.hostRating is int
+        && request.resource.data.n is int && request.resource.data.n > 0 && request.resource.data.n <= 50
+        && request.resource.data.level in [1, 2, 3]
+        && request.resource.data.style in ['mc', 'type'];
+      allow update: if request.auth != null
+        && resource.data.state == 'open'
+        && request.resource.data.state == 'live'
+        && request.resource.data.guestUid == request.auth.uid
+        && owns(request.resource.data.guestName.lower())
+        && request.resource.data.guestName.lower() != resource.data.hostName.lower()
+        && request.resource.data.guestRating is int
+        && request.resource.data.diff(resource.data).affectedKeys()
+             .hasOnly(['guestUid', 'guestName', 'guestRating', 'state']);
+      allow delete: if false;
+    }
+
+    // Live progress during a race. Each player owns their own doc, so the two never contend.
+    match /matches/{code}/players/{name} {
+      allow read: if request.auth != null;
+      allow create, update: if owns(name)
+        && request.resource.data.uid == request.auth.uid
+        && request.resource.data.name.lower() == name;
+      allow delete: if false;
+    }
+
+    // The result: written once, never changed. This is the audit trail behind every rating.
+    match /duels/{code} {
+      allow read: if true;
+      allow create: if request.auth != null
+        && (owns(request.resource.data.a.lower()) || owns(request.resource.data.b.lower()))
+        && roomHas(code, request.resource.data.a, request.resource.data.b)
+        && request.resource.data.pair == pairOf(request.resource.data.a, request.resource.data.b)
+        && request.resource.data.aBefore is int && request.resource.data.bBefore is int
+        && request.resource.data.aAfter is int && request.resource.data.bAfter is int
+        && request.resource.data.aAfter - request.resource.data.aBefore <= 40
+        && request.resource.data.aBefore - request.resource.data.aAfter <= 40
+        && request.resource.data.bAfter - request.resource.data.bBefore <= 40
+        && request.resource.data.bBefore - request.resource.data.bAfter <= 40
+        && (request.resource.data.winner == null
+            || request.resource.data.winner == request.resource.data.a
+            || request.resource.data.winner == request.resource.data.b)
+        && request.resource.data.at == request.time;
+      allow update, delete: if false;
+    }
+
+    // Ratings cache the duels above. Either player may apply a finished duel, each duel can
+    // only ever be applied once, and no single duel can move a rating by more than 40.
+    match /ratings/{name} {
+      allow read: if true;
+      allow create: if request.auth != null
+        && validRating(name)
+        && request.resource.data.duels == 1
+        && request.resource.data.rating >= 1160 && request.resource.data.rating <= 1240;
+      allow update: if request.auth != null
+        && validRating(name)
+        && request.resource.data.duels == resource.data.duels + 1
+        && request.resource.data.lastDuel != resource.data.lastDuel
+        && request.resource.data.rating >= resource.data.rating - 40
+        && request.resource.data.rating <= resource.data.rating + 40;
+      allow delete: if false;
+    }
+
+    function pairOf(a, b) {
+      return a.lower() < b.lower() ? a.lower() + '|' + b.lower() : b.lower() + '|' + a.lower();
+    }
+
+    // The result must correspond to a real room with exactly these two players in it.
+    function roomHas(code, a, b) {
+      let m = get(/databases/$(database)/documents/matches/$(code)).data;
+      return m.hostName == a && m.guestName == b;
+    }
+
+    function validRating(name) {
+      let d = request.resource.data;
+      let fields = ['name', 'rating', 'duels', 'wins', 'losses', 'lastDuel', 'updatedAt'];
+      return d.keys().hasOnly(fields) && d.keys().hasAll(fields)
+        && d.name is string && d.name.lower() == name
+        && d.rating is int && d.rating >= 100 && d.rating <= 4000
+        && d.duels is int && d.wins is int && d.losses is int
+        && d.wins >= 0 && d.losses >= 0 && d.wins + d.losses <= d.duels
+        && d.lastDuel is string && inDuel(d.lastDuel, name)
+        && d.updatedAt == request.time;
+    }
+
+    // You may only apply a duel that names you, and only if you are one of its two players.
+    function inDuel(code, name) {
+      let d = get(/databases/$(database)/documents/duels/$(code)).data;
+      return (d.a.lower() == name || d.b.lower() == name)
+        && (owns(d.a.lower()) || owns(d.b.lower()));
+    }
+
+    function owns(name) {
+      return request.auth != null
+        && get(/databases/$(database)/documents/usernames/$(name)).data.uid == request.auth.uid;
+    }
+
+    function validScore(board, name) {
+      let d = request.resource.data;
+      let fields = ['name', 'uid', 'mode', 'len', 'level', 'style', 'topics', 'correct', 'total', 'timeMs', 'rank', 'at'];
+      return owns(name)
+        && d.keys().hasOnly(fields) && d.keys().hasAll(fields)
+        && d.uid == request.auth.uid
+        && d.name is string && d.name.lower() == name
+        && d.level in [1, 2, 3]
+        && d.style in ['mc', 'type']
+        && d.len is int
+        && d.topics is string && d.topics.matches('^[a-z0-9+-]{1,200}$')
+        && board == d.mode + '-' + string(d.len) + '-' + string(d.level) + '-' + d.style + '-' + d.topics
+        && d.correct is int && d.total is int && d.timeMs is int && d.rank is int
+        && d.correct >= 0 && d.correct <= d.total
+        && d.at == request.time
+        && (
+          (d.mode == 'set' && d.len in [10, 20, 40] && d.total == d.len
+            && d.timeMs >= d.total * 400 && d.timeMs <= 7200000
+            && d.rank == (d.total - d.correct) * 10000000 + d.timeMs)
+          ||
+          (d.mode == 'sprint' && d.len in [30, 60, 120, 300] && d.total <= d.len * 3
+            && d.timeMs == d.len * 1000
+            && d.rank == (10000 - d.correct) * 10000000 + (d.total - d.correct))
+        );
+    }
+  }
+}

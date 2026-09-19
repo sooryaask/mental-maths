@@ -1,0 +1,202 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>No Calculator</title>
+  <link rel="icon" href="favicon.svg" type="image/svg+xml">
+  <link rel="icon" href="favicon-32.png" sizes="32x32" type="image/png">
+  <link rel="apple-touch-icon" href="apple-touch-icon.png">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=STIX+Two+Text:ital,wght@0,400;0,600;1,400&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div class="made-by" id="made-by">Made by <b>Sooryaa</b>!!!</div>
+  <div class="margin-rule" aria-hidden="true"></div>
+
+  <!-- CANDIDATE NAME -->
+  <main id="name" class="view" hidden>
+    <header class="masthead">
+      <p class="kicker">Paper 1 · Non-calculator · Leaderboard entry</p>
+      <h1>No <em>Calculator</em></h1>
+    </header>
+    <form id="name-form" class="cover" autocomplete="off">
+      <label for="name-input" class="cover-label">Candidate name</label>
+      <input id="name-input" maxlength="16" spellcheck="false" autocapitalize="off" autocomplete="off" placeholder="e.g. euler_fan">
+      <p class="note">3–16 letters, numbers or underscores. This is how you'll appear on the leaderboard, and the name is reserved for this browser.</p>
+      <p id="name-msg" class="name-msg" role="status"></p>
+      <div class="start-row">
+        <button id="name-go" class="btn-start">Continue <span class="kbd">Enter</span></button>
+        <button type="button" id="name-skip" class="link">practise without a name</button>
+      </div>
+    </form>
+  </main>
+
+  <!-- SETUP -->
+  <main id="setup" class="view" hidden>
+    <header class="masthead">
+      <p class="kicker">Paper 1 · Non-calculator · Time allowed: as little as possible</p>
+      <h1>No <em>Calculator</em></h1>
+      <p class="lede">Drill the arithmetic that eats your time in A-level, TMUA, ESAT, MAT and STEP: fractions, decimals, division, indices, surds, logs, differentiation and integration. Exact answers, no rounding.</p>
+      <p id="candidate" class="candidate" hidden></p>
+    </header>
+
+    <section class="block">
+      <div class="block-head"><h2>1. Sections</h2><span class="note">Pick one or more</span></div>
+      <div id="topic-grid" class="sections"></div>
+    </section>
+
+    <section class="block settings">
+      <div><h2>2. Difficulty</h2><div class="seg" id="seg-level"></div></div>
+      <div><h2>3. Answers</h2><div class="seg" id="seg-style"></div></div>
+      <div><h2>4. Mode</h2><div class="seg" id="seg-mode"></div></div>
+      <div><h2 id="len-label">Length</h2><div class="seg" id="seg-len"></div></div>
+    </section>
+
+    <div class="start-row">
+      <button id="start" class="btn-start">Begin <span class="kbd">Enter</span></button>
+      <button type="button" id="to-duel" class="btn-ghost" hidden>1v1 duel</button>
+      <p id="start-note" class="note"></p>
+    </div>
+
+    <section class="block" id="rating-block" hidden>
+      <div class="block-head"><h2>Duel ratings</h2><span class="note">Elo · head-to-head races</span></div>
+      <div id="rating-board" class="board"></div>
+    </section>
+
+    <section class="block" id="board-block" hidden>
+      <div class="block-head"><h2>Leaderboard</h2><span id="board-label" class="note"></span></div>
+      <div id="board" class="board"></div>
+    </section>
+
+    <section class="block" id="history-block">
+      <div class="block-head"><h2>Record</h2><button class="link" id="reset-stats">reset stats</button></div>
+      <div id="history" class="history"></div>
+    </section>
+  </main>
+
+  <!-- DUEL LOBBY -->
+  <main id="duel-lobby" class="view" hidden>
+    <header class="masthead small">
+      <p class="kicker">Paper 1 · 1v1 · Fastest time wins</p>
+      <h1>Head to <em>Head</em></h1>
+      <p class="lede">You and your opponent answer the same twenty questions. Lowest total time
+        wins — a wrong answer or a skip adds five seconds. Ratings move like chess.</p>
+      <p id="duel-me" class="candidate"></p>
+    </header>
+
+    <div id="duel-choose">
+      <section class="block">
+        <div class="block-head"><h2>Create a room</h2><span id="duel-setup-note" class="note"></span></div>
+        <div class="start-row">
+          <button type="button" id="duel-create" class="btn-start">Create a room</button>
+          <button type="button" id="duel-back" class="btn-ghost">Back</button>
+        </div>
+      </section>
+
+      <section class="block">
+        <div class="block-head"><h2>Or join one</h2><span class="note">Ask your opponent for their code</span></div>
+        <form id="duel-join-form" class="cover" autocomplete="off">
+          <label for="duel-code-input" class="cover-label">Room code</label>
+          <input id="duel-code-input" class="code-input" maxlength="4" spellcheck="false"
+                 autocapitalize="characters" autocomplete="off" placeholder="K7Q2">
+          <p id="duel-join-msg" class="name-msg" role="status"></p>
+          <div class="start-row"><button id="duel-join" class="btn-start">Join <span class="kbd">Enter</span></button></div>
+        </form>
+      </section>
+    </div>
+
+    <div id="duel-room" hidden>
+      <section class="block">
+        <div class="block-head"><h2>Room code</h2><span class="note">Send this to your opponent</span></div>
+        <div class="code-show"><b id="duel-code"></b><button type="button" class="link" id="duel-copy">copy invite link</button></div>
+      </section>
+      <section class="block">
+        <div class="versus" id="duel-versus"></div>
+        <p id="duel-status" class="board-msg" role="status"></p>
+      </section>
+      <div class="start-row"><button type="button" id="duel-cancel" class="btn-ghost">Leave room</button></div>
+    </div>
+  </main>
+
+  <!-- DRILL -->
+  <main id="drill" class="view" hidden>
+    <div class="drill-top">
+      <button class="link" id="quit">← end</button>
+      <div class="meter"><div id="meter-fill"></div></div>
+      <button class="link" id="sound-toggle" aria-pressed="true">sound on</button>
+      <div class="tally"><span id="clock">0:00</span><span id="score">0</span><span id="streak" class="streak"></span></div>
+    </div>
+
+    <div class="versus-live" id="duel-live" hidden>
+      <span class="vs-name" id="duel-opp-name"></span>
+      <div class="meter"><div id="duel-opp-fill"></div></div>
+      <span class="vs-stat" id="duel-opp-stat"></span>
+    </div>
+
+    <div class="sheet">
+      <p class="qmeta"><span id="qnum">Q1</span> <span id="qtopic"></span></p>
+      <div id="qtext" class="qtext"></div>
+      <form id="answer-form" autocomplete="off">
+        <span class="eq">=</span>
+        <input id="answer" type="text" inputmode="decimal" spellcheck="false" autocapitalize="off" aria-label="Your answer">
+        <span id="mark" class="mark" aria-hidden="true"></span>
+      </form>
+      <div class="answer-actions" id="answer-actions">
+        <button type="button" id="check" class="btn-inline">Check <span class="kbd">Enter</span></button>
+        <button type="button" id="skip-inline" class="btn-inline ghost">Skip</button>
+      </div>
+      <div class="keys" id="keys" aria-label="Symbols missing from phone keypads">
+        <button type="button" data-k="/">/</button><button type="button" data-k="-">−</button><button type="button" data-k=".">.</button>
+        <button type="button" data-k=" r ">r</button><button type="button" data-k="e">×10^</button><button type="button" data-k=" ">␣</button>
+      </div>
+      <div id="choices" class="choices"></div>
+      <p id="format" class="format"></p>
+      <div id="feedback" class="feedback" hidden></div>
+    </div>
+
+  </main>
+
+  <!-- RESULTS -->
+  <main id="results" class="view" hidden>
+    <header class="masthead small">
+      <p class="kicker" id="res-kicker"></p>
+      <h1 id="res-title"></h1>
+    </header>
+    <div class="res-stats" id="res-stats"></div>
+    <section class="block" id="res-duel-block" hidden>
+      <div class="block-head"><h2>Duel</h2><span id="res-duel-label" class="note"></span></div>
+      <div class="duel-result" id="res-duel"></div>
+    </section>
+    <section class="block" id="res-board-block" hidden>
+      <div class="block-head"><h2>Leaderboard</h2><span id="res-board-label" class="note"></span></div>
+      <p id="res-board-msg" class="board-msg" role="status"></p>
+      <div id="res-board" class="board"></div>
+    </section>
+    <section class="block"><h2>By topic</h2><div id="res-topics" class="res-topics"></div></section>
+    <section class="block" id="res-mistakes-block"><h2>Corrections</h2><ol id="res-mistakes" class="mistakes"></ol></section>
+    <div class="start-row">
+      <button id="again" class="btn-start">Again <span class="kbd">Enter</span></button>
+      <button id="redo" class="btn-ghost">Drill my mistakes</button>
+      <button id="back" class="btn-ghost">Change settings</button>
+    </div>
+  </main>
+
+  <div class="countdown" id="countdown" hidden><b id="countdown-n"></b></div>
+
+  <script src="js/rational.js"></script>
+  <script src="js/helpers.js"></script>
+  <script src="js/topics-a.js"></script>
+  <script src="js/topics-b.js"></script>
+  <script src="js/topics-ops.js"></script>
+  <script src="js/topics-calc.js"></script>
+  <script src="js/mc.js"></script>
+  <script src="js/sound.js"></script>
+  <script src="js/firebase-config.js"></script>
+  <script src="js/leaderboard.js"></script>
+  <script src="js/duel.js"></script>
+  <script src="js/app.js"></script>
+</body>
+</html>
