@@ -627,7 +627,9 @@
         "no-match": "No room with that code. Check it and try again.",
         "own-match": "That's your own room — send the code to someone else.",
         full: "That duel has already started.",
-      }[err.message] || "Couldn't reach the room. Check your connection.";
+      }[err.message] || (err.code === "permission-denied"
+        ? "Duels aren't switched on yet: publish the updated firestore.rules in the Firebase console."
+        : "Couldn't reach the room. Check your connection.");
     } finally {
       $("duel-join").disabled = false;
     }
@@ -646,7 +648,9 @@
       enterRoom(await DUEL.create({ name: myName, sections: [...settings.sections], level: settings.level, style: settings.style }));
     } catch (e) {
       console.error(e);
-      $("duel-setup-note").textContent = "Couldn't create a room. Check your connection and try again.";
+      $("duel-setup-note").textContent = e.code === "permission-denied"
+        ? "Duels aren't switched on yet: publish the updated firestore.rules in the Firebase console."
+        : "Couldn't create a room. Check your connection and try again.";
     } finally {
       $("duel-create").disabled = false;
     }
