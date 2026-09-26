@@ -2,9 +2,13 @@ rules_version = '2';
 
 // Paste this into Firebase console → Firestore Database → Rules, then Publish.
 // Usernames are claimed once and owned by the browser (anonymous account) that claimed them.
-// Scores can only be posted under a name you own, must be plausible, and only ever improve.
+// Scores can only be posted under a name you own, must be plausible (no faster than 0.6 s a
+// question on average), and only ever improve.
 // Duels add four collections: matches (invite rooms), matches/*/players (live progress),
-// duels (immutable results) and ratings (Elo, capped at +/-40 per duel).
+// duels (immutable results) and ratings (Elo). A finish time can't be faster than 0.6 s a
+// question or than the time that has actually passed since the race began; the winner must
+// follow from both players' progress docs; and a rating moves by exactly its duel's Elo delta,
+// once per duel.
 service cloud.firestore {
   match /databases/{database}/documents {
 
@@ -38,7 +42,7 @@ service cloud.firestore {
         && request.resource.data.state == 'open'
         && request.resource.data.guestName == null
         && request.resource.data.seed is int
-        && request.resource.data.hostRating is int
+        && request.resource.data.hostRating == ratingNow(request.resource.data.hostName)
         && request.resource.data.n is int && request.resource.data.n > 0 && request.resource.data.n <= 50
         && request.resource.data.level in [1, 2, 3]
         && request.resource.data.style in ['mc', 'type'];
@@ -46,20 +50,28 @@ service cloud.firestore {
         && resource.data.state == 'open'
         && request.resource.data.state == 'live'
         && request.resource.data.guestUid == request.auth.uid
+        && request.auth.uid != resource.data.host
         && owns(request.resource.data.guestName.lower())
         && request.resource.data.guestName.lower() != resource.data.hostName.lower()
-        && request.resource.data.guestRating is int
+        && request.resource.data.guestRating == ratingNow(request.resource.data.guestName)
+        && request.resource.data.startedAt == request.time
         && request.resource.data.diff(resource.data).affectedKeys()
-             .hasOnly(['guestUid', 'guestName', 'guestRating', 'state']);
+             .hasOnly(['guestUid', 'guestName', 'guestRating', 'state', 'startedAt']);
       allow delete: if false;
     }
 
     // Live progress during a race. Each player owns their own doc, so the two never contend.
+    // `seen` is server time, so the other side's walkout claim can be checked. Once a player
+    // has finished, their doc is frozen.
     match /matches/{code}/players/{name} {
       allow read: if request.auth != null;
       allow create, update: if owns(name)
         && request.resource.data.uid == request.auth.uid
-        && request.resource.data.name.lower() == name;
+        && request.resource.data.name.lower() == name
+        && inRace(code, name)
+        && request.resource.data.seen == request.time
+        && (resource == null || resource.data.get('finished', false) != true)
+        && validFinish(code, request.resource.data);
       allow delete: if false;
     }
 
@@ -70,34 +82,98 @@ service cloud.firestore {
         && (owns(request.resource.data.a.lower()) || owns(request.resource.data.b.lower()))
         && roomHas(code, request.resource.data.a, request.resource.data.b)
         && request.resource.data.pair == pairOf(request.resource.data.a, request.resource.data.b)
-        && request.resource.data.aBefore is int && request.resource.data.bBefore is int
+        && request.resource.data.aBefore == room(code).hostRating
+        && request.resource.data.bBefore == room(code).guestRating
         && request.resource.data.aAfter is int && request.resource.data.bAfter is int
-        && request.resource.data.aAfter - request.resource.data.aBefore <= 40
-        && request.resource.data.aBefore - request.resource.data.aAfter <= 40
-        && request.resource.data.bAfter - request.resource.data.bBefore <= 40
-        && request.resource.data.bBefore - request.resource.data.bAfter <= 40
-        && (request.resource.data.winner == null
-            || request.resource.data.winner == request.resource.data.a
-            || request.resource.data.winner == request.resource.data.b)
+        && rightWinner(code, request.resource.data)
+        && eloOk(request.resource.data.aBefore, request.resource.data.bBefore, request.resource.data.aAfter,
+                 scoreOf(request.resource.data, request.resource.data.a))
+        && eloOk(request.resource.data.bBefore, request.resource.data.aBefore, request.resource.data.bAfter,
+                 scoreOf(request.resource.data, request.resource.data.b))
         && request.resource.data.at == request.time;
       allow update, delete: if false;
     }
 
-    // Ratings cache the duels above. Either player may apply a finished duel, each duel can
-    // only ever be applied once, and no single duel can move a rating by more than 40.
+    // Ratings cache the duels above. Either player may apply a finished duel. Each applied duel
+    // leaves a marker in applied/, written in the same transaction, so it can never count
+    // twice, and the rating moves by exactly the delta recorded in that duel.
     match /ratings/{name} {
       allow read: if true;
-      allow create: if request.auth != null
-        && validRating(name)
-        && request.resource.data.duels == 1
-        && request.resource.data.rating >= 1160 && request.resource.data.rating <= 1240;
+      allow create: if request.auth != null && validRating(name, 1200, 0, 0, 0);
       allow update: if request.auth != null
-        && validRating(name)
-        && request.resource.data.duels == resource.data.duels + 1
-        && request.resource.data.lastDuel != resource.data.lastDuel
-        && request.resource.data.rating >= resource.data.rating - 40
-        && request.resource.data.rating <= resource.data.rating + 40;
+        && validRating(name, resource.data.rating, resource.data.duels, resource.data.wins, resource.data.losses);
       allow delete: if false;
+
+      match /applied/{code} {
+        allow read: if true;
+        allow create: if request.auth != null
+          && request.resource.data.keys().size() == 0
+          && getAfter(/databases/$(database)/documents/ratings/$(name)).data.lastDuel == code;
+        allow update, delete: if false;
+      }
+    }
+
+    function room(code) {
+      return get(/databases/$(database)/documents/matches/$(code)).data;
+    }
+
+    function ratingNow(name) {
+      let p = /databases/$(database)/documents/ratings/$(name.lower());
+      return exists(p) ? get(p).data.rating : 1200;
+    }
+
+    // Only the two seated players of a race that has started can report progress.
+    function inRace(code, name) {
+      let m = room(code);
+      return m.state == 'live' && 'startedAt' in m
+        && (m.hostName.lower() == name || m.guestName.lower() == name);
+    }
+
+    // A finish must add up: every question answered, at least 0.6 s of real time per question,
+    // and no less time than has actually passed since the race began. Each miss adds 5 s.
+    function validFinish(code, p) {
+      let m = room(code);
+      return p.get('finished', false) != true || (
+        p.finalMs is int && p.correct is int && p.wrong is int
+        && p.correct >= 0 && p.wrong >= 0 && p.correct + p.wrong == m.n
+        && p.finalMs - p.wrong * 5000 >= m.n * 600
+        && request.time >= m.startedAt + duration.value(p.finalMs - p.wrong * 5000, 'ms'));
+    }
+
+    function playerDoc(code, name) {
+      return /databases/$(database)/documents/matches/$(code)/players/$(name.lower());
+    }
+    function finished(code, name) {
+      return exists(playerDoc(code, name)) && get(playerDoc(code, name)).data.get('finished', false) == true;
+    }
+    // Silent for 40 s by server time (the client waits 45 s before claiming a walkout).
+    function gone(code, name) {
+      let since = exists(playerDoc(code, name)) ? get(playerDoc(code, name)).data.seen : room(code).startedAt;
+      return request.time > since + duration.value(40, 's');
+    }
+
+    // The winner has to follow from the players' own progress docs: the faster finisher, or
+    // the only finisher once the other has gone quiet. Two walkouts are a draw.
+    function rightWinner(code, d) {
+      let fa = finished(code, d.a);
+      let fb = finished(code, d.b);
+      let ma = fa ? get(playerDoc(code, d.a)).data.finalMs : 0;
+      let mb = fb ? get(playerDoc(code, d.b)).data.finalMs : 0;
+      return fa && fb ? d.winner == (ma < mb ? d.a : mb < ma ? d.b : null)
+        : fa ? d.winner == d.a && gone(code, d.b)
+        : fb ? d.winner == d.b && gone(code, d.a)
+        : d.winner == null && gone(code, d.a) && gone(code, d.b);
+    }
+
+    function scoreOf(d, name) {
+      return d.winner == null ? 0.5 : d.winner == name ? 1.0 : 0.0;
+    }
+
+    // Standard Elo with K = 40 (provisional) or 24, allowing 1 point for rounding.
+    function eloOk(mine, theirs, after, score) {
+      let e = 1.0 / (1.0 + math.pow(10.0, (theirs - mine) / 400.0));
+      return math.abs(after - (mine + 40.0 * (score - e))) <= 1.0
+        || math.abs(after - (mine + 24.0 * (score - e))) <= 1.0;
     }
 
     function pairOf(a, b) {
@@ -110,15 +186,22 @@ service cloud.firestore {
       return m.hostName == a && m.guestName == b;
     }
 
-    function validRating(name) {
+    function validRating(name, rating, duels, wins, losses) {
       let d = request.resource.data;
       let fields = ['name', 'rating', 'duels', 'wins', 'losses', 'lastDuel', 'updatedAt'];
+      let r = get(/databases/$(database)/documents/duels/$(d.lastDuel)).data;
+      let delta = r.a.lower() == name ? r.aAfter - r.aBefore : r.bAfter - r.bBefore;
+      let won = r.winner != null && r.winner.lower() == name;
+      let lost = r.winner != null && !won;
+      let applied = /databases/$(database)/documents/ratings/$(name)/applied/$(d.lastDuel);
       return d.keys().hasOnly(fields) && d.keys().hasAll(fields)
         && d.name is string && d.name.lower() == name
-        && d.rating is int && d.rating >= 100 && d.rating <= 4000
-        && d.duels is int && d.wins is int && d.losses is int
-        && d.wins >= 0 && d.losses >= 0 && d.wins + d.losses <= d.duels
         && d.lastDuel is string && inDuel(d.lastDuel, name)
+        && d.rating == rating + delta
+        && d.duels == duels + 1
+        && d.wins == wins + (won ? 1 : 0)
+        && d.losses == losses + (lost ? 1 : 0)
+        && !exists(applied) && existsAfter(applied)
         && d.updatedAt == request.time;
     }
 
@@ -151,10 +234,10 @@ service cloud.firestore {
         && d.at == request.time
         && (
           (d.mode == 'set' && d.len in [10, 20, 40] && d.total == d.len
-            && d.timeMs >= d.total * 400 && d.timeMs <= 7200000
+            && d.timeMs >= d.total * 600 && d.timeMs <= 7200000
             && d.rank == (d.total - d.correct) * 10000000 + d.timeMs)
           ||
-          (d.mode == 'sprint' && d.len in [30, 60, 120, 300] && d.total <= d.len * 3
+          (d.mode == 'sprint' && d.len in [30, 60, 120, 300] && d.total * 600 <= d.len * 1000
             && d.timeMs == d.len * 1000
             && d.rank == (10000 - d.correct) * 10000000 + (d.total - d.correct))
         );

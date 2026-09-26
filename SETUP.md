@@ -10,8 +10,18 @@ Firebase's free (Spark) plan.
    Give it any name (e.g. `no-calculator`). You can turn Google Analytics off.
 2. In the left menu open **Build → Firestore Database → Create database**.
    Choose **Start in production mode** and a location near you (e.g. `europe-west2` for London).
-3. In Firestore, open the **Rules** tab, replace everything with the contents of
-   [`firestore.rules`](firestore.rules), and click **Publish**.
+3. Publish the security rules. **Easiest and least error-prone** — from this folder, run:
+
+   ```bash
+   npx firebase-tools login && npx firebase-tools deploy --only firestore:rules
+   ```
+
+   That deploys [`firestore.rules`](firestore.rules) straight from the repo (the project is
+   already named in `.firebaserc`), so there is nothing to copy or paste.
+
+   Or by hand: in Firestore open the **Rules** tab, replace everything with the contents of
+   [`firestore.rules`](firestore.rules), and click **Publish**. Watch for an error banner —
+   if the rules don't compile, the console keeps the old ones and duels stay switched off.
 4. Open **Build → Authentication → Get started → Sign-in method**, click **Anonymous**,
    switch it on and **Save**. (Players never see a sign-in screen; this is what lets a
    browser own the username it claimed.)
@@ -82,32 +92,39 @@ code (and a shareable link like `?duel=K7Q2`); the other types the code or opens
   connection cannot cost you the race; the live opponent bar is only for watching.
 - **Ratings work like chess.** Everyone starts at 1200. K is 40 for your first ten duels,
   then 24 — so one duel moves a rating by at most 40 points. Beating someone much stronger
-  is worth far more than beating someone weaker.
+  is worth far more than beating someone weaker. You can't duel yourself from the same
+  browser.
 - **Walking out loses.** If you finish and your opponent goes quiet for 45 seconds, they
   forfeit and you win. If both of you walk out, it's a draw and nobody's rating moves.
 - The room settings come from whoever created it: their sections, difficulty and answer
   style. Mode and length are ignored — a duel is always twenty questions.
 
+**If you can't create or join a room**, the rules almost certainly aren't deployed: the
+duel collections default to denied, so the lobby fails on its very first read. Run the
+`npx firebase-tools deploy --only firestore:rules` command in step 3 and try again.
+
 Duels need a claimed name, since a rating has to belong to someone. They use four new
-collections — `matches`, `matches/*/players`, `duels` and `ratings` — and none of them touch
-the existing leaderboard under `boards/`.
+collections — `matches`, `matches/*/players`, `duels` and `ratings` (plus
+`ratings/*/applied`, which records each duel a rating has counted) — and none of them
+touch the existing leaderboard under `boards/`.
 
 Optional tidy-up: in Firestore, **TTL** on the `matches` collection with the field
 `expiresAt` will delete abandoned invite rooms automatically, at no cost.
 
 ## Limits worth knowing
 
-- Scores are checked for plausibility (e.g. at least 0.4 s per question, and correct ≤
-  total), but the browser marks the answers, so someone determined could still post a
-  fake score under their own name. You can delete bad entries in the Firebase console
-  under **Firestore → Data → boards**.
-- Duel ratings have the same honest limit. Reproducing the exact Elo arithmetic inside
-  security rules would mean float maths matching the browser's to the last bit, which is
-  too brittle to rely on, so the rules enforce bounds instead: a rating can only move by
-  40 points at a time, each duel can only ever be counted once, and every change must point
-  at a real, immutable record in `duels` naming a real opponent. Inflating a rating
-  therefore means fabricating many duels, all of them visible under **Firestore → Data →
-  duels** and deletable from the console. A Cloud Function would close the gap properly,
-  but that needs the paid Blaze plan.
+- **Bots.** The page ignores fake typing, clicks and key presses sent by scripts (the kind
+  a copy-pasted "auto-answer" script uses), and a run with three or more answers faster
+  than 0.3 s is never ranked; in a duel it counts as not finishing.
+- **Direct writes.** Someone can skip the page and write to Firestore themselves, so the
+  rules check every score: at least 0.6 s per question on average, correct ≤ total, and
+  only improvements. In duels, a finish time can't be shorter than the time that has
+  actually passed since the race began, the winner must follow from both players' progress,
+  and a rating moves by exactly that duel's Elo change, once.
+- **What's still possible.** The browser marks the answers, so a determined cheater who
+  edits the page's code can still post a score that is fast but just about humanly
+  possible. You can delete bad entries in the Firebase console under **Firestore → Data →
+  boards**. Closing that gap fully needs a Cloud Function that times and marks answers on
+  the server, which needs the pay-as-you-go Blaze plan.
 - The free plan allows about 50,000 reads and 20,000 writes a day, which is far more
   than a class or friend group will use.

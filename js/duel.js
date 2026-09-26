@@ -98,7 +98,8 @@ const DUEL = (() => {
     if (lower(m.hostName) === lower(name)) throw new Error("own-match");
     if (m.state !== "open") throw new Error("full");
     const me = await ratingOf(name);
-    const patch = { guestUid: uid, guestName: name, guestRating: me.rating, state: "live" };
+    // startedAt is server time: the rules check no finish time is shorter than the race so far
+    const patch = { guestUid: uid, guestName: name, guestRating: me.rating, state: "live", startedAt: FV.serverTimestamp() };
     await ref.update(patch);
     return { id: ref.id, ...m, ...patch };
   }
@@ -126,12 +127,12 @@ const DUEL = (() => {
     return () => { dead = true; if (off) off(); };
   }
 
-  // Fire-and-forget: a dropped progress ping must never interrupt the run. `at` is a plain
-  // client number, so one write makes one snapshot and the opponent can time out silence.
+  // Fire-and-forget: a dropped progress ping must never interrupt the run. `seen` is server
+  // time so the rules can check a walkout claim. Resolves (never rejects) once the write lands.
   function progress(code, name, patch) {
-    if (!db) return;
-    matches().doc(code).collection("players").doc(lower(name))
-      .set({ name, uid, at: Date.now(), ...patch }, { merge: true })
+    if (!db) return Promise.resolve();
+    return matches().doc(code).collection("players").doc(lower(name))
+      .set({ name, uid, at: Date.now(), seen: FV.serverTimestamp(), ...patch }, { merge: true })
       .catch((e) => console.error("duel progress", e));
   }
 
@@ -145,14 +146,15 @@ const DUEL = (() => {
     return pa.finalMs < pb.finalMs ? 1 : 0;
   }
 
-  // Applies one player's delta once. Both clients try; `lastDuel` makes the second a no-op,
-  // so a result still lands if the loser closes their tab.
+  // Applies one player's delta once. Both clients try; the applied/{code} marker makes the
+  // second a no-op, so a result still lands if the loser closes their tab.
   async function applyRating(code, name, delta, score) {
     const ref = db.collection("ratings").doc(lower(name));
+    const mark = ref.collection("applied").doc(code);
     await db.runTransaction(async (tx) => {
-      const snap = await tx.get(ref);
+      const [snap, done] = await Promise.all([tx.get(ref), tx.get(mark)]);
+      if (done.exists) return; // already counted
       const cur = snap.exists ? snap.data() : blankRating(name);
-      if (cur.lastDuel === code) return; // already counted
       tx.set(ref, {
         name,
         rating: cur.rating + delta,
@@ -162,6 +164,7 @@ const DUEL = (() => {
         lastDuel: code,
         updatedAt: FV.serverTimestamp(),
       });
+      tx.set(mark, {});
     });
   }
 

@@ -176,6 +176,12 @@
 
   /* ---------- Session ---------- */
   let S = null, tick = null, resWatch = null;
+  // Anti-bot. Scripts that fake typing, clicks or key presses send untrusted events, which are
+  // ignored. `typed` is the answer box as a real keystroke or key tap last left it, so a script
+  // can't fill the box and submit the form either. Runs with several answers faster than anyone
+  // can read a question are never ranked, which also catches bots that drive a real keyboard.
+  const TOO_FAST_MS = 300, TOO_FAST_LIMIT = 3;
+  let typed = "";
 
   const show = (id) => {
     ["name", "setup", "duel-lobby", "drill", "results"].forEach((v) => ($(v).hidden = v !== id));
@@ -188,7 +194,7 @@
     S = {
       board: !queue && settings.mode !== "zen" ? boardFor(settings) : null, mode: queue ? "set" : settings.mode,
       level: duel ? duel.level : settings.level, style: duel ? duel.style : settings.style, len: queue ? queue.length : settings.len[settings.mode],
-      queue, duel, penaltyMs: 0, items: [], score: 0, streak: 0, best: 0, t0: performance.now(), cur: null, waiting: false, lastKey: "" };
+      queue, duel, penaltyMs: 0, tooFast: 0, items: [], score: 0, streak: 0, best: 0, t0: performance.now(), cur: null, waiting: false, lastKey: "" };
     show("drill");
     $("duel-live").hidden = !duel;
     clearInterval(tick); tick = setInterval(updateClock, 200);
@@ -242,7 +248,7 @@
         `<button type="button" data-i="${i}"><span class="ck">${"ABCD"[i]}</span><span class="cv">${o.html}</span></button>`).join("");
       if (document.activeElement) document.activeElement.blur();
     } else {
-      $("answer").value = ""; $("answer").readOnly = false; $("answer").focus();
+      $("answer").value = typed = ""; $("answer").readOnly = false; $("answer").focus();
     }
     updateClock();
   }
@@ -268,6 +274,7 @@
     if (mcMode && !skipped) return;
     const raw = mcMode ? "" : $("answer").value;
     if (!skipped && !raw.trim()) return;
+    if (!skipped && !mcMode && raw !== typed) return; // filled in by a script, not typed
     const res = skipped ? { ok: false } : check(S.cur, raw);
     if (res.invalid) { flash(); $("format").textContent = "Couldn't read that — " + S.cur.format; return; }
     record(res.ok, skipped ? "—" : raw, false, res.note);
@@ -284,6 +291,7 @@
   // Log the attempt, update score and stats, then show feedback or move on
   function record(ok, raw, isHtml, note) {
     const cur = S.cur, ms = performance.now() - cur.t;
+    if (raw !== "—" && ms < TOO_FAST_MS) S.tooFast++;
     S.items.push({ q: cur, raw, isHtml, ok, ms });
     const st = (stats[cur.topic] ||= { n: 0, ok: 0, ms: 0 });
     st.n++; st.ms += ms; if (ok) st.ok++;
@@ -356,6 +364,8 @@
   function finish(completed = false) {
     clearInterval(tick);
     const s = S; S = null;
+    const flagged = s.tooFast >= TOO_FAST_LIMIT;
+    if (flagged) completed = false; // unranked, and a duel counts it as not finished
     const n = s.items.length, ok = s.score, time = (performance.now() - s.t0) / 1000;
     const avg = n ? s.items.reduce((a, i) => a + i.ms, 0) / n / 1000 : 0;
     let pb = false;
@@ -386,11 +396,11 @@
     show("results");
     renderSections(); renderHistory();
     $("res-duel-block").hidden = !s.duel;
-    if (s.duel) return finishDuel(s, completed, ok, n, time);
-    showResultBoard(s, completed, ok, n, time);
+    if (s.duel) return finishDuel(s, completed, ok, n, time, flagged);
+    showResultBoard(s, completed, ok, n, time, flagged);
   }
 
-  async function showResultBoard(s, completed, correct, total, timeS) {
+  async function showResultBoard(s, completed, correct, total, timeS, flagged) {
     $("res-board-block").hidden = !online || !s.board;
     if (!online || !s.board) return;
     const msg = $("res-board-msg");
@@ -404,6 +414,7 @@
       });
     };
     if (!myName) { msg.textContent = "Add a name on the start page to get on the leaderboard."; return watchBoard(); }
+    if (flagged) { msg.textContent = "Answers came in faster than anyone can read the questions, so this run wasn't posted."; return watchBoard(); }
     if (!completed) { msg.textContent = "Only finished runs are ranked, so this one wasn't posted."; return watchBoard(); }
     msg.textContent = "Posting your score…";
     try {
@@ -530,16 +541,16 @@
   }
 
   // Report my time, then wait for theirs. If they go quiet for IDLE_MS they forfeit.
-  function finishDuel(s, completed, correct, total, timeS) {
+  function finishDuel(s, completed, correct, total, timeS, flagged) {
     duelStop();
     const d = s.duel, el = $("res-duel");
     const myMs = Math.round(timeS * 1000 + s.penaltyMs);
     const mine = { name: d.me, idx: total, correct, wrong: total - correct, elapsedMs: myMs, finished: completed, finalMs: completed ? myMs : null };
     $("res-kicker").textContent = `Duel · room ${d.code} · vs ${d.opp}`;
-    $("res-title").textContent = completed ? "Race run" : "You left the race";
+    $("res-title").textContent = flagged ? "Run not counted: answers came in too fast" : completed ? "Race run" : "You left the race";
     $("res-duel-label").textContent = `${d.match.n} questions · +${DUEL.PENALTY_MS / 1000}s per miss`;
     el.innerHTML = `<p class="note">Sending your time…</p>`;
-    DUEL.progress(d.code, d.me, mine);
+    const sent = DUEL.progress(d.code, d.me, mine); // the rules check the result against it
 
     let settled = false, latest = {}, lastSeen = Date.now(), sig = "";
     const done = async (players) => {
@@ -547,6 +558,7 @@
       settled = true;
       duelStop();
       el.innerHTML = `<p class="note">Working out the result…</p>`;
+      await sent;
       try {
         // My own numbers are authoritative for me: my final write may still be in flight.
         renderDuelResult(await DUEL.settle(d.code, d.match, { ...players, [d.me.toLowerCase()]: mine }), d);
@@ -628,7 +640,7 @@
         "own-match": "That's your own room — send the code to someone else.",
         full: "That duel has already started.",
       }[err.message] || (err.code === "permission-denied"
-        ? "Duels aren't switched on yet: publish the updated firestore.rules in the Firebase console."
+        ? "Duels aren't switched on yet: deploy firestore.rules to Firebase (SETUP.md, step 3)."
         : "Couldn't reach the room. Check your connection.");
     } finally {
       $("duel-join").disabled = false;
@@ -649,7 +661,7 @@
     } catch (e) {
       console.error(e);
       $("duel-setup-note").textContent = e.code === "permission-denied"
-        ? "Duels aren't switched on yet: publish the updated firestore.rules in the Firebase console."
+        ? "Duels aren't switched on yet: deploy firestore.rules to Firebase (SETUP.md, step 3)."
         : "Couldn't create a room. Check your connection and try again.";
     } finally {
       $("duel-create").disabled = false;
@@ -683,25 +695,26 @@
   $("quit").onclick = () => S && (S.items.length ? finish() : (clearInterval(tick), (S = null), toSetup()));
   // iOS number keypads have no Enter key, so typed mode needs on-screen Check and Skip
   $("answer-actions").addEventListener("mousedown", (e) => e.target.closest("button") && e.preventDefault());
-  $("check").onclick = () => { submit(); $("answer").focus(); };
-  $("skip-inline").onclick = () => { S && S.waiting ? next() : submit(true); $("answer").focus(); };
+  $("check").onclick = (e) => { if (e.isTrusted) submit(); $("answer").focus(); };
+  $("skip-inline").onclick = (e) => { if (e.isTrusted) S && S.waiting ? next() : submit(true); $("answer").focus(); };
   $("answer-form").onsubmit = (e) => { e.preventDefault(); submit(); };
   // Typed mode: accept a correct answer the moment it's typed; wrong answers still need Enter
-  $("answer").addEventListener("input", () => {
-    if (!S || S.waiting || S.cur.options) return;
-    const raw = $("answer").value;
+  $("answer").addEventListener("input", (e) => {
+    if (!e.isTrusted || !S || S.waiting || S.cur.options) return;
+    const raw = typed = $("answer").value;
     if (raw.trim() && check(S.cur, raw).ok) submit();
   });
-  $("choices").addEventListener("click", (e) => { const b = e.target.closest("button[data-i]"); if (b) choose(+b.dataset.i); });
+  $("choices").addEventListener("click", (e) => { if (!e.isTrusted) return; const b = e.target.closest("button[data-i]"); if (b) choose(+b.dataset.i); });
   $("feedback").addEventListener("click", (e) => { if (e.target.closest("#fb-next") && S && S.waiting) next(); });
   // Keep focus (and the phone keyboard) on the answer box when tapping helper keys
   $("keys").addEventListener("mousedown", (e) => e.target.closest("button") && e.preventDefault());
   $("keys").addEventListener("click", (e) => {
-    const k = e.target.closest("[data-k]"); if (!k || !S || S.waiting) return;
-    const inp = $("answer"); inp.value += k.dataset.k; inp.focus();
+    const k = e.target.closest("[data-k]"); if (!e.isTrusted || !k || !S || S.waiting) return;
+    const inp = $("answer"); inp.value += k.dataset.k; typed = inp.value; inp.focus();
   });
   document.addEventListener("keydown", (e) => {
     if (!$("drill").hidden) {
+      if (!e.isTrusted) return;
       if (e.key === "Escape") { e.preventDefault(); S && S.waiting ? next() : submit(true); }
       else if (S && S.style === "mc") {
         if (e.key === "Enter") { e.preventDefault(); if (S.waiting) next(); }
